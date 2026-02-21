@@ -394,7 +394,7 @@ def main():
         "--model", default="Qwen/Qwen3-32B", help="Qwen model for judging"
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.7, help="Decoding temperature"
+        "--temperature", type=float, default=0.0, help="Decoding temperature"
     )
     parser.add_argument(
         "--top_p", type=float, default=0.8, help="Top-p nucleus sampling"
@@ -424,6 +424,11 @@ def main():
         type=int,
         default=1,
         help="Tensor parallel size for vLLM",
+    )
+    parser.add_argument(
+        "--model_path",
+        default=None,
+        help="Original model path (e.g. HuggingFace ID) for recording in the summary",
     )
     args = parser.parse_args()
 
@@ -466,6 +471,7 @@ def main():
     )
 
     detected_model_name: Optional[str] = None
+    detected_model_path: Optional[str] = None
     first_run_path: Optional[Path] = json_files[0] if json_files else None
     if first_run_path is not None:
         try:
@@ -476,6 +482,9 @@ def main():
                 maybe_model = metadata.get("model")
                 if maybe_model:
                     detected_model_name = str(maybe_model)
+                maybe_path = metadata.get("model_path")
+                if maybe_path:
+                    detected_model_path = str(maybe_path)
         except Exception:
             pass
 
@@ -543,6 +552,7 @@ def main():
                     "judge_model": args.model,
                     "max_output_tokens": args.max_output_tokens,
                 },
+                "trace": run_data.get("result", []),
             }
             try:
                 with eval_path.open("w", encoding="utf-8") as f:
@@ -565,6 +575,7 @@ def main():
                 "retrieval_recall": retrieval_recall,
                 "tool_call_counts": run_data.get("tool_call_counts", {}),
                 "judge_prompt": judge_prompt,
+                "trace": run_data.get("result", []),
             }
         )
 
@@ -622,6 +633,7 @@ def main():
                     "judge_model": args.model,
                     "max_output_tokens": args.max_output_tokens,
                 },
+                "trace": item["trace"],
             }
             try:
                 with item["eval_path"].open("w", encoding="utf-8") as f:
@@ -770,6 +782,7 @@ def main():
     summary_path = output_dir / "evaluation_summary.json"
     summary = {
         "LLM": detected_model_name or "change me when submitting",
+        "model_path": args.model_path or detected_model_path or str(input_dir),
         "Accuracy (%)": accuracy_percent,
         "Recall (%)": recall_percent,
         "avg_tool_stats": all_tool_counts,
@@ -813,6 +826,32 @@ def main():
     print(f"\nSummary saved to {summary_path}")
 
     save_detailed_csv(all_results, output_dir)
+
+    # ── Consolidate: merge individual eval JSONs → traces.json ──
+    traces_path = output_dir / "traces.json"
+    eval_jsons = sorted(output_dir.glob("*_eval.json"))
+    if eval_jsons:
+        traces = []
+        for ep in eval_jsons:
+            try:
+                with ep.open("r", encoding="utf-8") as f:
+                    traces.append(json.load(f))
+            except Exception as e:
+                print(f"Warning: could not read {ep}: {e}")
+        with traces_path.open("w", encoding="utf-8") as f:
+            json.dump(traces, f, indent=2, ensure_ascii=False)
+        print(f"Consolidated {len(traces)} eval files → {traces_path}")
+
+        for ep in eval_jsons:
+            ep.unlink()
+        print(f"Removed {len(eval_jsons)} individual eval JSONs")
+
+    # ── Delete input runs directory ──────────────────────────────
+    import shutil
+
+    if input_dir.is_dir():
+        shutil.rmtree(input_dir)
+        print(f"Deleted runs directory: {input_dir}")
 
 
 if __name__ == "__main__":

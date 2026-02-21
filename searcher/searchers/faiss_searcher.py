@@ -12,6 +12,12 @@ from typing import Any, Dict, List, Optional
 import faiss
 import numpy as np
 import torch
+
+try:
+    import flash_attn  # noqa: F401
+    _FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    _FLASH_ATTN_AVAILABLE = False
 from datasets import load_dataset
 from tevatron.retriever.arguments import ModelArguments
 from tevatron.retriever.driver.encode import DenseModel
@@ -34,7 +40,7 @@ class FaissSearcher(BaseSearcher):
         )
         parser.add_argument(
             "--model-name",
-            required=True,
+            default="Qwen/Qwen3-Embedding-8B",
             help="Model name for FAISS search (e.g. 'Qwen/Qwen3-Embedding-0.6B').",
         )
         parser.add_argument(
@@ -129,23 +135,18 @@ class FaissSearcher(BaseSearcher):
     def _setup_gpu(self) -> None:
         num_gpus = faiss.get_num_gpus()
         if num_gpus == 0:
-            logger.info("No GPU found or using faiss-cpu. Using CPU.")
+            # faiss-cpu build: index runs on CPU, which is fine.
+            # The embedding model still requires GPU (enforced in _load_model).
+            logger.info("FAISS index running on CPU (faiss-cpu build or no GPU visible to FAISS).")
         else:
-            logger.info(f"Using {num_gpus} GPU(s)")
-            if num_gpus == 1:
-                co = faiss.GpuClonerOptions()
-                co.useFloat16 = True
-                res = faiss.StandardGpuResources()
-                self.retriever.index = faiss.index_cpu_to_gpu(
-                    res, 0, self.retriever.index, co
-                )
-            else:
-                co = faiss.GpuMultipleClonerOptions()
-                co.shard = True
-                co.useFloat16 = True
-                self.retriever.index = faiss.index_cpu_to_all_gpus(
-                    self.retriever.index, co, ngpu=num_gpus
-                )
+            gpu_id = getattr(self.args, "searcher_gpu", 0)
+            logger.info(f"Pinning FAISS index to GPU {gpu_id}")
+            co = faiss.GpuClonerOptions()
+            co.useFloat16 = True
+            res = faiss.StandardGpuResources()
+            self.retriever.index = faiss.index_cpu_to_gpu(
+                res, gpu_id, self.retriever.index, co
+            )
 
     def _load_model(self) -> None:
         logger.info(f"Loading model: {self.args.model_name}")
@@ -170,6 +171,14 @@ class FaissSearcher(BaseSearcher):
         else:
             torch_dtype = torch.float32
 
+        attn_impl = model_args.attn_implementation
+        if not _FLASH_ATTN_AVAILABLE and attn_impl in (None, "flash_attention_2"):
+            print(
+                "flash_attn not found in the current environment — "
+                "falling back to attn_implementation='eager'."
+            )
+            attn_impl = "eager"
+
         self.model = DenseModel.load(
             model_args.model_name_or_path,
             pooling=model_args.pooling,
@@ -177,10 +186,16 @@ class FaissSearcher(BaseSearcher):
             lora_name_or_path=model_args.lora_name_or_path,
             cache_dir=model_args.cache_dir,
             torch_dtype=torch_dtype,
-            attn_implementation=model_args.attn_implementation,
+            attn_implementation=attn_impl,
         )
 
-        self.model = self.model.to("cuda" if torch.cuda.is_available() else "cpu")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"FAISS searcher with embedding model '{self.args.model_name}' requires a GPU, "
+                "but no CUDA-capable GPU was found. Use BM25 for CPU-only search."
+            )
+        gpu_id = getattr(self.args, "searcher_gpu", 0)
+        self.model = self.model.to(f"cuda:{gpu_id}")
         self.model.eval()
 
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -260,7 +275,8 @@ class FaissSearcher(BaseSearcher):
             return_tensors="pt",
         )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        gpu_id = getattr(self.args, "searcher_gpu", 0)
+        device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
         batch_dict = {k: v.to(device) for k, v in batch_dict.items()}
 
         with torch.amp.autocast(device):
@@ -329,7 +345,13 @@ class ReasonIrSearcher(FaissSearcher):
             torch_dtype=torch_dtype,
             trust_remote_code=True,
         )
-        self.model = self.model.to("cuda" if torch.cuda.is_available() else "cpu")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"FAISS searcher with embedding model '{self.args.model_name}' requires a GPU, "
+                "but no CUDA-capable GPU was found. Use BM25 for CPU-only search."
+            )
+        gpu_id = getattr(self.args, "searcher_gpu", 0)
+        self.model = self.model.to(f"cuda:{gpu_id}")
         self.model.eval()
 
         logger.info("Model loaded successfully")
@@ -338,7 +360,8 @@ class ReasonIrSearcher(FaissSearcher):
         if not all([self.retriever, self.model, self.lookup]):
             raise RuntimeError("Searcher not properly initialized")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        gpu_id = getattr(self.args, "searcher_gpu", 0)
+        device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
 
         with torch.amp.autocast(device):
             with torch.no_grad():

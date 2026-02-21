@@ -130,3 +130,90 @@ def format_query(query: str, query_template: str | None = None) -> str:
         return QUERY_TEMPLATE_NO_GET_DOCUMENT_NO_CITATION.format(Question=query)
     else:
         raise ValueError(f"Unknown query template: {query_template}")
+
+
+# ── Split system / user templates ────────────────────────────
+# Used by format_messages() to separate agent instructions (system role) from
+# the bare question (user role).  This is important for models whose chat
+# template merges the system message with tool definitions — keeping the
+# agent instructions in the system prompt ensures the model sees them
+# alongside the tool list and does not skip tool-calling.
+
+_FORMAT_WITH_CITATION = (
+    "Explanation: {{your explanation for your final answer. For this "
+    "explanation section only, you should cite your evidence documents inline "
+    "by enclosing their docids in square brackets [] at the end of sentences. "
+    "For example, [20].}}\n"
+    "Exact Answer: {{your succinct, final answer}}\n"
+    "Confidence: {{your confidence score between 0% and 100% for your answer}}"
+)
+
+_FORMAT_NO_CITATION = (
+    "Explanation: {{your explanation for your final answer}}\n"
+    "Exact Answer: {{your succinct, final answer}}\n"
+    "Confidence: {{your confidence score between 0% and 100% for your answer}}"
+)
+
+# The tool schema is injected automatically via tools= in chat.completions.create
+# (the LFM chat template appends "List of tools: [...]" to this system message),
+# so we only need generic agent instructions here — no need to hard-code tool names.
+_SYSTEM_TEMPLATE = (
+    "You are a deep research agent. You need to answer the given question by "
+    "interacting with a search engine using the provided tools. Please "
+    "perform reasoning and use the tools step by step, in an interleaved "
+    "manner. You may call the tools multiple times.\n\n"
+    "Your response should be in the following format:\n"
+    "{format_spec}\n"
+)
+
+_LFM_SYSTEM_TEMPLATE = (
+    "You are a deep research agent. You need to answer the given question by "
+    "interacting with a search engine using the provided tools. Please "
+    "perform reasoning and use the tools step by step, in an interleaved "
+    "manner. You may call the tools multiple times. When you need to make tool calls, please "
+    "output the tool call in the following format: <|tool_call_start|>[func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)]<|tool_call_end|>\n\n"
+    "Your response should be in the following format:\n"
+    "{format_spec}\n\n"
+)
+
+_SYSTEM_PROMPTS: dict[str, str] = {
+    "QUERY_TEMPLATE": _SYSTEM_TEMPLATE.format(format_spec=_FORMAT_WITH_CITATION),
+    "QUERY_TEMPLATE_NO_GET_DOCUMENT": _SYSTEM_TEMPLATE.format(
+        format_spec=_FORMAT_WITH_CITATION
+    ),
+    "QUERY_TEMPLATE_NO_GET_DOCUMENT_NO_CITATION": _SYSTEM_TEMPLATE.format(
+        format_spec=_FORMAT_NO_CITATION
+    ),
+}
+
+_LIQUID_SYSTEM_PROMPTS: dict[str, str] = {
+    "QUERY_TEMPLATE": _LFM_SYSTEM_TEMPLATE.format(format_spec=_FORMAT_WITH_CITATION),
+    "QUERY_TEMPLATE_NO_GET_DOCUMENT": _LFM_SYSTEM_TEMPLATE.format(
+        format_spec=_FORMAT_WITH_CITATION
+    ),
+    "QUERY_TEMPLATE_NO_GET_DOCUMENT_NO_CITATION": _LFM_SYSTEM_TEMPLATE.format(
+        format_spec=_FORMAT_NO_CITATION
+    ),
+}
+
+def format_messages(
+    query: str, query_template: str | None = None, if_lfm: bool = False
+) -> list[dict[str, str]]:
+    """Return a ``[system, user]`` message list with proper role separation.
+
+    Unlike ``format_query`` (which puts everything in the user message),
+    this function places the agent instructions and response-format spec in
+    the *system* role and the bare question in the *user* role.  Models
+    whose chat template merges the system message with injected tool
+    definitions (e.g. LFM) benefit from this split because the model sees
+    its instructions alongside the tool list and is less likely to skip
+    tool-calling.
+    """
+    if query_template is None or query_template not in _SYSTEM_PROMPTS:
+        # Fallback: single user message (same behaviour as format_query)
+        return [{"role": "user", "content": format_query(query, query_template)}]
+    if if_lfm:
+        return [{"role": "system", "content": _LIQUID_SYSTEM_PROMPTS[query_template]}, {"role": "user", "content": f"Question: {query}"}]
+    else: 
+      return [{"role": "system", "content": _SYSTEM_PROMPTS[query_template]}, {"role": "user", "content": f"Question: {query}"}]
+
