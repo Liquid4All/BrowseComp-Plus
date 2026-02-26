@@ -129,7 +129,7 @@ def run_lfm_conversation_with_tools(
     tool_handler: SearchToolHandler,
     max_tokens: int = 10000,
     max_iterations: int = 100,
-    verbose: bool = False,
+    verbose: bool = True,
     **kwargs,
 ):
     """
@@ -156,7 +156,7 @@ def run_lfm_conversation_with_tools(
             )
         except Exception as e:
             if verbose:
-                print(f"Error on iteration {iteration}: {e}")
+                print(f"\nError on iteration {iteration}: {e}\n")
             continue
 
         choice = response.choices[0]

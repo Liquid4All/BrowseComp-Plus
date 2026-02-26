@@ -228,7 +228,7 @@ def build_arg_parser(
         help="Specify the query template to use",
     )
     parser.add_argument(
-        "--num-threads", type=int, default=1, help="Parallel threads for dataset mode"
+        "--num-threads", type=int, default=8, help="Parallel threads for dataset mode"
     )
     parser.add_argument(
         "--max-iterations",
