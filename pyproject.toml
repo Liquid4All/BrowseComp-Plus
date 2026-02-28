@@ -15,6 +15,7 @@ dependencies = [
     "peft>=0.16.0",
     "pyngrok>=7.2.12",
     "pyserini>=1.2.0",
+    "pylatexenc>=2.10",
     "python-dotenv>=1.1.1",
     "qwen-agent[mcp,rag]==0.0.34",
     "pypdfium2>=4.31.0",
