@@ -170,8 +170,7 @@ _LFM_SYSTEM_TEMPLATE = (
     "You are a deep research agent. You need to answer the given question by "
     "interacting with a search engine using the provided tools. Please "
     "perform reasoning and use the tools step by step, in an interleaved "
-    "manner. You may call the tools multiple times. When you need to make tool calls, please "
-    "output the tool call in the following format: <|tool_call_start|>[func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)]<|tool_call_end|>\n\n"
+    "manner. You may call the tools multiple times.\n\n"
     "Your response should be in the following format:\n"
     "{format_spec}\n\n"
 )

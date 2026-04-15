@@ -40,7 +40,10 @@ def strip_think_blocks(text: str) -> str:
 def strip_tool_call_markers(text: str) -> str:
     """Remove <|tool_call_start|>...<|tool_call_end|> markers."""
     return re.sub(
-        r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", text, flags=re.DOTALL
+        r"(?:<\|tool_call_start\|>)?\s*\[.*?\]\s*<\|tool_call_end\|>",
+        "",
+        text,
+        flags=re.DOTALL,
     ).strip()
 
 
@@ -99,7 +102,7 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
         return []
 
     calls: list[dict] = []
-    pattern = r"<\|tool_call_start\|>\s*\[(.*?)\]\s*<\|tool_call_end\|>"
+    pattern = r"(?:<\|tool_call_start\|>)?\s*\[(.*?)\]\s*<\|tool_call_end\|>"
     matches = re.findall(pattern, text, flags=re.DOTALL)
 
     for match in matches:
