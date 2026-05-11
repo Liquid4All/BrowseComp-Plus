@@ -174,28 +174,22 @@ def run_lfm_conversation_with_tools(
             # Keep the raw assistant content (model expects to see its own output)
             messages.append({"role": "assistant", "content": raw_content})
 
-            # Execute tools and build LFM-format result list
-            results_for_model: list[dict] = []
+            # Emit one {role: tool, content: <raw_result>} message per tool
+            # call. Match how other models emit tool messages.
             for tc in text_calls:
                 try:
                     result = tool_handler.execute_tool(tc["name"], tc["arguments"])
                     tool_usage[tc["name"]] = tool_usage.get(tc["name"], 0) + 1
                     try:
                         parsed_result = json.loads(result)
+                        content = json.dumps(parsed_result, ensure_ascii=False)
                     except (json.JSONDecodeError, TypeError):
-                        parsed_result = result
-                    results_for_model.append(
-                        {"name": tc["name"], "result": parsed_result}
-                    )
+                        content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                    messages.append({"role": "tool", "content": content})
                 except Exception as e:
-                    results_for_model.append(
-                        {"name": tc["name"], "result": f"Error: {e}"}
+                    messages.append(
+                        {"role": "tool", "content": json.dumps({"error": str(e)})}
                     )
-
-            # Tool results in LFM native format: [{"name": ..., "result": ...}]
-            messages.append(
-                {"role": "tool", "content": json.dumps(results_for_model)}
-            )
             continue
 
         # ── No tool calls → final answer ──────────────────────
@@ -229,20 +223,14 @@ def persist_lfm_response(
     """
     os.makedirs(out_dir, exist_ok=True)
 
-    # Tool messages have no tool_call_id; content is a JSON list of results.
-    text_tool_result_queue: list[list[dict]] = []
-    for m in messages:
-        if isinstance(m, dict) and m.get("role") == "tool":
-            try:
-                parsed = json.loads(m["content"])
-                if isinstance(parsed, list):
-                    text_tool_result_queue.append(parsed)
-                else:
-                    text_tool_result_queue.append([])
-            except Exception:
-                text_tool_result_queue.append([])
+    # Conversation loop emits one {role: tool} message per tool call, in order.
+    # Pair each parsed tool call with the next tool message via a positional pointer.
+    tool_msgs = [
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    tool_msg_idx = 0
 
-    text_result_idx = 0
     normalized_results: list[dict] = []
 
     for m in messages:
@@ -254,17 +242,11 @@ def persist_lfm_response(
         # ── Text-based tool calls ─────────────────────────────
         text_calls = extract_tool_calls_from_text(content)
         if text_calls:
-            results_list = (
-                text_tool_result_queue[text_result_idx]
-                if text_result_idx < len(text_tool_result_queue)
-                else []
-            )
-            text_result_idx += 1
-
-            for i, tc in enumerate(text_calls):
+            for tc in text_calls:
                 output = None
-                if i < len(results_list) and isinstance(results_list[i], dict):
-                    output = json.dumps(results_list[i].get("result"))
+                if tool_msg_idx < len(tool_msgs):
+                    output = tool_msgs[tool_msg_idx].get("content")
+                    tool_msg_idx += 1
                 normalized_results.append(
                     {
                         "type": "tool_call",
